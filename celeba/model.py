@@ -33,8 +33,8 @@ class MVAE(nn.Module):
         else:  # return mean during inference
             return mu
 
-    def forward(self, image=None, text=None):
-        mu, logvar  = self.infer(image, text)
+    def forward(self, image=None, attrs=None):
+        mu, logvar  = self.infer(image, attrs)
         # reparametrization trick to sample
         z           = self.reparametrize(mu, logvar)
         # reconstruct inputs based on that gaussian
@@ -43,7 +43,7 @@ class MVAE(nn.Module):
         return image_recon, attrs_recon, mu, logvar
 
     def infer(self, image=None, attrs=None): 
-        batch_size = image.size(0) if image is not None else text.size(0)
+        batch_size = image.size(0) if image is not None else attrs.size(0)
         use_cuda   = next(self.parameters()).is_cuda  # check if CUDA
         # initialize the universal prior expert
         mu, logvar = prior_expert((1, batch_size, self.n_latents), 

@@ -257,6 +257,10 @@ class Swish(nn.Module):
         return x * F.sigmoid(x)
 
 
+def swish(x):
+    return x * F.sigmoid(x)
+
+
 def prior_expert(size, use_cuda=False):
     """Universal prior expert. Here we use a spherical
     Gaussian: N(0, 1).

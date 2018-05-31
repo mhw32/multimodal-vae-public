@@ -5,6 +5,9 @@ from __future__ import absolute_import
 import os
 import sys
 import shutil
+import numpy as np
+from tqdm import tqdm
+from itertools import combinations
 
 import torch
 import torch.nn as nn
@@ -21,7 +24,7 @@ from datasets import CelebAttributes
 
 
 def elbo_loss(recon, data, mu, logvar, lambda_image=1.0, 
-              lambda_attr=1.0, annealing_factor=1.):
+              lambda_attrs=1.0, annealing_factor=1.):
     """Compute the ELBO for an arbitrary number of data modalities.
 
     @param recon: list of torch.Tensors/Variables
@@ -51,7 +54,7 @@ def elbo_loss(recon, data, mu, logvar, lambda_image=1.0,
             data_ix  = data[ix].view(batch_size, -1)
             BCE += lambda_image * torch.sum(binary_cross_entropy_with_logits(recon_ix, data_ix), dim=1)
         else:  # this is for an attribute
-            BCE += lambda_attr * binary_cross_entropy_with_logits(recon[ix], data[ix])
+            BCE += lambda_attrs * binary_cross_entropy_with_logits(recon[ix], data[ix])
     KLD  = -0.5 * torch.sum(1 + logvar - mu.pow(2) - logvar.exp(), dim=1)
     ELBO = torch.mean(BCE + annealing_factor * KLD)
     return ELBO
@@ -212,6 +215,7 @@ if __name__ == "__main__":
         CelebAttributes(partition='train', data_dir='./data',
                         image_transform=preprocess_data),
         batch_size=args.batch_size, shuffle=True)
+    N_mini_batches = len(train_loader)
     test_loader = torch.utils.data.DataLoader(
         CelebAttributes(partition='val', data_dir='./data',
                         image_transform=preprocess_data),
@@ -264,7 +268,7 @@ if __name__ == "__main__":
             n_elbo_terms += 1  # keep track of how many terms there are
 
             # compute ELBO using only image data
-            recon_image, _, mu, logvar = model(batch_size, image=image)
+            recon_image, _, mu, logvar = model(image=image)
             train_loss += elbo_loss([recon_image], [image], mu, logvar, 
                                     lambda_image=args.lambda_image, lambda_attrs=args.lambda_attrs,
                                     annealing_factor=annealing_factor)
@@ -306,7 +310,7 @@ if __name__ == "__main__":
 
             if batch_idx % args.log_interval == 0:
                 print('Train Epoch: {} [{}/{} ({:.0f}%)]\tLoss: {:.6f}\tAnnealing-Factor: {:.3f}'.format(
-                    epoch, batch_idx * len(x), len(train_loader.dataset),
+                    epoch, batch_idx * batch_size, len(train_loader.dataset),
                     100. * batch_idx / len(train_loader), train_loss_meter.avg, annealing_factor))
 
         print('====> Epoch: {}\tLoss: {:.4f}'.format(epoch, train_loss_meter.avg))
@@ -317,6 +321,7 @@ if __name__ == "__main__":
         test_loss = 0
 
         # for simplicitly, here i'm only going to track the joint loss. 
+        pbar = tqdm(total=len(test_loader))
         for batch_idx, (image, attrs) in enumerate(test_loader):
             if args.cuda:
                 image, attrs = image.cuda(), attrs.cuda()
@@ -327,7 +332,9 @@ if __name__ == "__main__":
             # compute the elbo using all data.
             recon_image, recon_attrs, mu, logvar = model(image, attrs)
             test_loss += elbo_loss([recon_image] + recon_attrs, [image] + attrs, mu, logvar).data[0]
+            pbar.update()
 
+        pbar.close()
         test_loss /= len(test_loader)
         print('====> Test Loss: {:.4f}'.format(test_loss))
         return test_loss

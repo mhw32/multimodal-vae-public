@@ -169,7 +169,7 @@ if __name__ == "__main__":
         train_loss_meter = AverageMeter()
 
         # NOTE: is_paired is 1 if the example is paired
-        for batch_idx, (image, attrs, is_paired) in enumerate(train_loader):
+        for batch_idx, (image, attrs) in enumerate(train_loader):
             if epoch < args.annealing_epochs:
                 # compute the KL annealing factor for the current mini-batch in the current epoch
                 annealing_factor = (float(batch_idx + (epoch - 1) * N_mini_batches + 1) /
@@ -202,7 +202,7 @@ if __name__ == "__main__":
                                    lambda_image=args.lambda_image, lambda_attrs=args.lambda_attrs,
                                    annealing_factor=annealing_factor)
             attrs_loss = elbo_loss(None, None, recon_attrs_3, attrs, mu_3, logvar_3, 
-                                   lambda_image=args.lambda_image, lambda_attrs=args.lambda_text,
+                                   lambda_image=args.lambda_image, lambda_attrs=args.lambda_attrs,
                                    annealing_factor=annealing_factor)
             train_loss = joint_loss + image_loss + attrs_loss
             train_loss_meter.update(train_loss.data[0], batch_size)
@@ -213,7 +213,7 @@ if __name__ == "__main__":
 
             if batch_idx % args.log_interval == 0:
                 print('Train Epoch: {} [{}/{} ({:.0f}%)]\tLoss: {:.6f}\tAnnealing-Factor: {:.3f}'.format(
-                    epoch, batch_idx * len(x), len(train_loader.dataset),
+                    epoch, batch_idx * len(image), len(train_loader.dataset),
                     100. * batch_idx / len(train_loader), train_loss_meter.avg, annealing_factor))
 
         print('====> Epoch: {}\tLoss: {:.4f}'.format(epoch, train_loss_meter.avg))
@@ -223,7 +223,8 @@ if __name__ == "__main__":
         model.eval()
         test_loss_meter = AverageMeter()
 
-        for batch_idx, (image, attrs) in tqdm(enumerate(test_loader)):
+        pbar = tqdm(total=len(test_loader))
+        for batch_idx, (image, attrs) in enumerate(test_loader):
             if args.cuda:
                 image  = image.cuda()
                 attrs  = attrs.cuda()
@@ -240,10 +241,12 @@ if __name__ == "__main__":
             image_loss = elbo_loss(recon_image_2, image, None, None, mu_2, logvar_2, 
                                    lambda_image=args.lambda_image, lambda_attrs=args.lambda_attrs)
             attrs_loss = elbo_loss(None, None, recon_attrs_3, attrs, mu_3, logvar_3, 
-                                   lambda_image=args.lambda_image, lambda_attrs=args.lambda_text)
+                                   lambda_image=args.lambda_image, lambda_attrs=args.lambda_attrs)
             test_loss = joint_loss + image_loss + attrs_loss
             test_loss_meter.update(test_loss.data[0], batch_size)
+            pbar.update()
 
+        pbar.close()
         print('====> Test Loss: {:.4f}'.format(test_loss_meter.avg))
         return test_loss_meter.avg
 

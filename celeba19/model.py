@@ -38,7 +38,7 @@ class MVAE(nn.Module):
         else:  # return mean during inference
             return mu
 
-    def forward(self, batch_size, image=None, text=None):
+    def forward(self, image=None, attrs=[None for _ in xrange(N_ATTRS)]):
         """Forward pass through the MVAE.
 
         @param image: ?PyTorch.Tensor
@@ -49,7 +49,7 @@ class MVAE(nn.Module):
         @return image_recon: PyTorch.Tensor
         @return attr_recons: list of PyTorch.Tensors (N_ATTRS length)
         """
-        mu, logvar  = self.infer(image, text)
+        mu, logvar  = self.infer(image, attrs)
         # reparametrization trick to sample
         z           = self.reparametrize(mu, logvar)
         # reconstruct inputs based on that gaussian
@@ -61,7 +61,15 @@ class MVAE(nn.Module):
         return image_recon, attr_recons, mu, logvar
 
     def infer(self, image=None, attrs=[None for _ in xrange(N_ATTRS)]): 
-        batch_size = image.size(0) if image is not None else text.size(0)
+        # get the batch size
+        if image is not None:
+            batch_size = len(image)
+        else:
+            for i in xrange(N_ATTRS):
+                if attrs[i] is not None:
+                    batch_size = len(attrs[i])
+                    break
+        
         use_cuda   = next(self.parameters()).is_cuda  # check if CUDA
         mu, logvar = prior_expert((1, batch_size, self.n_latents), 
                                   use_cuda=use_cuda)

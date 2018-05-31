@@ -138,9 +138,10 @@ if __name__ == "__main__":
     train_loader = torch.utils.data.DataLoader(
         datasets.CelebVision(partition='train', data_dir='./data'),
         batch_size=args.batch_size, shuffle=True)
+    N_mini_batches = len(train_loader)
     test_loader = torch.utils.data.DataLoader(
         datasets.CelebVision(partition='val', data_dir='./data'),
-        batch_size=args.batch_size, shuffle=True)
+        batch_size=args.batch_size, shuffle=False)
 
     model = MVAE(args.n_latents, use_cuda=args.cuda)
     optimizer = optim.Adam(model.parameters(), lr=args.lr)
@@ -298,8 +299,9 @@ if __name__ == "__main__":
         model.eval()
         test_loss = 0
 
+        pbar = tqdm(total=len(test_loader))
         for batch_idx, (image, gray_image, edge_image, mask_image, 
-                        obscured_image, watermark_image) in enumerate(train_loader):
+                        obscured_image, watermark_image) in enumerate(test_loader):
             if args.cuda:
                 image           = image.cuda()
                 gray_image      = gray_image.cuda()
@@ -365,6 +367,9 @@ if __name__ == "__main__":
                 save_image(watermark_comparison.data.cpu(), 
                            './results/watermark/reconstruction_%d.png' % epoch, nrow=n)
 
+            pbar.update()
+
+        pbar.close()
         test_loss /= len(test_loader)
         print('====> Test Loss: {:.4f}'.format(test_loss))
         return test_loss

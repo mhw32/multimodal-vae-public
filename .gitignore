@@ -101,3 +101,9 @@ ENV/
 .mypy_cache/
 
 **.DS_Store
+
+**data/
+**.png
+**.txt
+**trained_models/
+

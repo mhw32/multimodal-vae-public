@@ -56,9 +56,9 @@ def elbo_loss(recon_image, image, recon_text, text, mu, logvar,
         text       = text.view(-1)
         # sum over the different classes
         text_bce   = torch.sum(cross_entropy(recon_text, text), dim=1)
-        text_BCE   = text_BCE.view(batch_size, n_digits)
+        text_bce   = text_bce.view(batch_size, n_digits)
         # sum over the number of digits
-        text_BCE   = torch.sum(text_BCE, dim=1)
+        text_bce   = torch.sum(text_bce, dim=1)
 
     # Kingma and Welling. Auto-Encoding Variational Bayes. ICLR, 2014
     # https://arxiv.org/abs/1312.6114
@@ -187,7 +187,7 @@ if __name__ == "__main__":
         train_loss_meter = AverageMeter()
 
         # NOTE: is_paired is 1 if the example is paired
-        for batch_idx, (image, text, is_paired) in enumerate(train_loader):
+        for batch_idx, (image, text) in enumerate(train_loader):
             if epoch < args.annealing_epochs:
                 # compute the KL annealing factor for the current mini-batch in the current epoch
                 annealing_factor = (float(batch_idx + (epoch - 1) * N_mini_batches + 1) /
@@ -230,7 +230,7 @@ if __name__ == "__main__":
 
             if batch_idx % args.log_interval == 0:
                 print('Train Epoch: {} [{}/{} ({:.0f}%)]\tLoss: {:.6f}\tAnnealing-Factor: {:.3f}'.format(
-                    epoch, batch_idx * len(x), len(train_loader.dataset),
+                    epoch, batch_idx * len(image), len(train_loader.dataset),
                     100. * batch_idx / len(train_loader), train_loss_meter.avg, annealing_factor))
 
         print('====> Epoch: {}\tLoss: {:.4f}'.format(epoch, train_loss_meter.avg))
@@ -240,7 +240,7 @@ if __name__ == "__main__":
         model.eval()
         test_loss_meter = AverageMeter()
 
-        for batch_idx, (image, text) in tqdm(enumerate(test_loader)):
+        for batch_idx, (image, text) in enumerate(test_loader):
             if args.cuda:
                 image  = image.cuda()
                 text   = text.cuda()
@@ -253,10 +253,10 @@ if __name__ == "__main__":
             recon_image_2, recon_text_2, mu_2, logvar_2 = model(image)
             recon_image_3, recon_text_3, mu_3, logvar_3 = model(text=text)
 
-            joint_loss += elbo_loss(recon_image_1, image, recon_text_1, text, mu_1, logvar_1)
-            image_loss += elbo_loss(recon_image_2, image, None, None, mu_2, logvar_2)
-            text_loss  += elbo_loss(None, None, recon_text_3, text, mu_3, logvar_3)
-            test_loss   = joint_loss + image_loss + text_loss
+            joint_loss = elbo_loss(recon_image_1, image, recon_text_1, text, mu_1, logvar_1)
+            image_loss = elbo_loss(recon_image_2, image, None, None, mu_2, logvar_2)
+            text_loss  = elbo_loss(None, None, recon_text_3, text, mu_3, logvar_3)
+            test_loss  = joint_loss + image_loss + text_loss
             test_loss_meter.update(test_loss.data[0], batch_size)
 
         print('====> Test Loss: {:.4f}'.format(test_loss_meter.avg))

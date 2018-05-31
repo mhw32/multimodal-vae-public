@@ -117,7 +117,7 @@ class TextEncoder(nn.Module):
         self.fc2   = nn.Linear(512, 512)
         self.fc31  = nn.Linear(512, n_latents)
         self.fc32  = nn.Linear(512, n_latents)
-        self.swish = Swish()()
+        self.swish = Swish()
 
     def forward(self, x):
         h = self.swish(self.fc1(x))

@@ -5,7 +5,6 @@ from __future__ import absolute_import
 import os
 import sys
 import shutil
-from tqdm import tqdm
 
 import torch
 import torch.nn as nn
@@ -221,7 +220,7 @@ if __name__ == "__main__":
 
             if batch_idx % args.log_interval == 0:
                 print('Train Epoch: {} [{}/{} ({:.0f}%)]\tLoss: {:.6f}\tAnnealing-Factor: {:.3f}'.format(
-                    epoch, batch_idx * len(x), len(train_loader.dataset),
+                    epoch, batch_idx * len(image), len(train_loader.dataset),
                     100. * batch_idx / len(train_loader), train_loss_meter.avg, annealing_factor))
 
         print('====> Epoch: {}\tLoss: {:.4f}'.format(epoch, train_loss_meter.avg))
@@ -231,7 +230,7 @@ if __name__ == "__main__":
         model.eval()
         test_loss_meter = AverageMeter()
 
-        for batch_idx, (image, text) in tqdm(enumerate(test_loader)):
+        for batch_idx, (image, text) in enumerate(test_loader):
             if args.cuda:
                 image  = image.cuda()
                 text   = text.cuda()
@@ -244,10 +243,10 @@ if __name__ == "__main__":
             recon_image_2, recon_text_2, mu_2, logvar_2 = model(image)
             recon_image_3, recon_text_3, mu_3, logvar_3 = model(text=text)
 
-            joint_loss += elbo_loss(recon_image_1, image, recon_text_1, text, mu_1, logvar_1)
-            image_loss += elbo_loss(recon_image_2, image, None, None, mu_2, logvar_2)
-            text_loss  += elbo_loss(None, None, recon_text_3, text, mu_3, logvar_3)
-            test_loss   = joint_loss + image_loss + text_loss
+            joint_loss = elbo_loss(recon_image_1, image, recon_text_1, text, mu_1, logvar_1)
+            image_loss = elbo_loss(recon_image_2, image, None, None, mu_2, logvar_2)
+            text_loss  = elbo_loss(None, None, recon_text_3, text, mu_3, logvar_3)
+            test_loss  = joint_loss + image_loss + text_loss
             test_loss_meter.update(test_loss.data[0], batch_size)
 
         print('====> Test Loss: {:.4f}'.format(test_loss_meter.avg))
