@@ -6,180 +6,265 @@ import numpy as np
 
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 from torch.autograd import Variable
-from torch.nn import functional as F
-from torch.nn.parameter import Parameter
+
+from ..utils.models import ProductOfExperts
+from .utils import log_joint_estimate, log_marginal_estimate
 
 
 class MVAE(nn.Module):
-    """Multimodal Variational Autoencoder.
+    """Multimodal Variational Autoencoder via a product of experts.
+    This is hardcoded to the MNIST design.
 
-    @param n_latents: integer
-                      number of latent dimensions
+    We optimize a lower bound on the following:
+
+        log p(x) + log p(y) + log p(x,y)
+
+    @param z_dim: integer
+                  number of latent dimensions.
     """
-    def __init__(self, n_latents):
+    def __init__(self, z_dim):
         super(MVAE, self).__init__()
-        self.image_encoder = ImageEncoder(n_latents)
-        self.image_decoder = ImageDecoder(n_latents)
-        self.text_encoder  = TextEncoder(n_latents)
-        self.text_decoder  = TextDecoder(n_latents)
-        self.experts       = ProductOfExperts()
-        self.n_latents     = n_latents
+        self.z_dim = z_dim
+        self.image_encoder = ImageEncoder(self.z_dim)
+        self.image_decoder = ImageDecoder(self.z_dim)
+        self.label_encoder = LabelEncoder(self.z_dim)
+        self.label_decoder = LabelDecoder(self.z_dim)
+        self.poe = ProductOfExperts()
 
-    def reparametrize(self, mu, logvar):
-        if self.training:
-            std = logvar.mul(0.5).exp_()
-            eps = Variable(std.data.new(std.size()).normal_())
-            return eps.mul(std).add_(mu)
-        else:
-          return mu
+    def reparameterize(self, mu, logvar):
+        std = torch.exp(0.5*logvar)
+        eps = Variable(std.data.new(std.size()).normal_())
+        return eps.mul(std).add_(mu)
 
-    def forward(self, image=None, text=None):
-        mu, logvar = self.infer(image, text)
-        # reparametrization trick to sample
-        z          = self.reparametrize(mu, logvar)
-        # reconstruct inputs based on that gaussian
-        img_recon  = self.image_decoder(z)
-        txt_recon  = self.text_decoder(z)
-        return img_recon, txt_recon, mu, logvar
+    def forward(self, image, label):
+        mu, logvar = self._poe_inference(image, label)
+        z = self.reparameterize(mu, logvar)
 
-    def infer(self, image=None, text=None): 
-        batch_size = image.size(0) if image is not None else text.size(0)
-        use_cuda   = next(self.parameters()).is_cuda  # check if CUDA
-        # initialize the universal prior expert
-        mu, logvar = prior_expert((1, batch_size, self.n_latents), 
-                                  use_cuda=use_cuda)
-        if image is not None:
-            img_mu, img_logvar = self.image_encoder(image)
-            mu     = torch.cat((mu, img_mu.unsqueeze(0)), dim=0)
-            logvar = torch.cat((logvar, img_logvar.unsqueeze(0)), dim=0)
+        recon_image = self.image_decoder(z)
+        recon_label = self.label_decoder(z)
 
-        if text is not None:
-            txt_mu, txt_logvar = self.text_encoder(text)
-            mu     = torch.cat((mu, txt_mu.unsqueeze(0)), dim=0)
-            logvar = torch.cat((logvar, txt_logvar.unsqueeze(0)), dim=0)
+        return recon_image, recon_label, z, mu, logvar
 
-        # product of experts to combine gaussians
-        mu, logvar = self.experts(mu, logvar)
+    def get_prior_expert(self, batch_size, use_cuda):
+        mu = Variable(torch.zeros((batch_size, self.z_dim)))
+        logvar = Variable(torch.zeros((batch_size, self.z_dim)))
+
+        if use_cuda:
+            mu, logvar = mu.cuda(), logvar.cuda()
+
         return mu, logvar
+
+    def _poe_inference(self, image, label):
+        assert not (image is None and label is None)
+        if image is None:
+            batch_size = label.size(0)
+            use_cuda = label.is_cuda
+        else:
+            batch_size = image.size(0)
+            use_cuda = image.is_cuda
+
+        mu_arr, logvar_arr = [], []
+        prior_mu, prior_logvar = self.get_prior_expert(batch_size, use_cuda)
+
+        if image is not None:
+            image_mu, image_logvar = self.image_encoder(image)
+            mu_arr.extend([prior_mu, image_mu])
+            logvar_arr.extend([prior_logvar, image_logvar])
+
+        if label is not None:
+            label_mu, label_logvar = self.label_encoder(label)
+            mu_arr.extend([prior_mu, label_mu])
+            logvar_arr.extend([prior_logvar, label_logvar])
+
+        mu = torch.stack(mu_arr)
+        logvar = torch.stack(logvar_arr)
+        mu, logvar = self.poe(mu, logvar)
+
+        return mu, logvar
+
+    def get_joint_marginal(self, image, label, n_samples=1):
+        assert image is not None
+        assert label is not None
+        batch_size =  image.size(0)
+
+        mu, logvar = self._poe_inference(image, label)
+
+        mu = mu.unsqueeze(1).repeat(1, n_samples, 1)
+        logvar = logvar.unsqueeze(1).repeat(1, n_samples, 1)
+
+        z = self.reparameterize(mu, logvar)
+        z2d = z.view(batch_size * n_samples, self.z_dim)
+
+        recon_image_2d = self.image_decoder(z2d)
+        recon_label_2d = self.label_decoder(z2d)
+
+        recon_image_2d = recon_image_2d.view(batch_size * n_samples, 784)
+        recon_image = recon_image_2d.view(batch_size, n_samples, 784)
+        image = image.view(batch_size, 784)
+
+        label_dim = recon_label_2d.size(1)
+        recon_label = recon_label_2d.view(batch_size, n_samples, label_dim)
+
+        log_p = log_joint_estimate(
+            recon_image, image, recon_label, label, z, mu, logvar)
+
+        return log_p
+
+
+class VAE(nn.Module):
+    def __init__(self, z_dim):
+        super(VAE, self).__init__()
+        self.z_dim = z_dim
+        self.encoder = MNISTImageEncoder(self.z_dim)
+        self.decoder = MNISTImageDecoder(self.z_dim)
+
+    def reparameterize(self, mu, logvar):
+        std = torch.exp(0.5*logvar)
+        eps = Variable(std.data.new(std.size()).normal_())
+        return eps.mul(std).add_(mu)
+
+    def forward(self, data):
+        mu, logvar = self.encoder(data)
+        z = self.reparameterize(mu, logvar)
+        recon_data = self.decoder(z)
+
+        return recon_data, z, mu, logvar
+
+    def get_marginal(self, data, n_samples=1):
+        batch_size =  data.size(0)
+
+        mu, logvar = self.encoder(data)
+
+        mu = mu.unsqueeze(1).repeat(1, n_samples, 1)
+        logvar = logvar.unsqueeze(1).repeat(1, n_samples, 1)
+
+        z = self.reparameterize(mu, logvar)
+        z2d = z.view(batch_size * n_samples, self.z_dim)
+
+        recon_data_2d = self.decoder(z2d)
+        recon_data_2d = recon_data_2d.view(batch_size * n_samples, 784)
+        recon_data = recon_data_2d.view(batch_size, n_samples, 784)
+        data = data.view(batch_size, 784)
+
+        log_p = log_marginal_estimate(recon_data, data, z, mu, logvar)
+
+        return log_p
 
 
 class ImageEncoder(nn.Module):
-    """Parametrizes q(z|x).
-
-    @param n_latents: integer
-                      number of latent dimensions
     """
-    def __init__(self, n_latents):
+    Parameterizes q(z|image). Uses DC-GAN architecture.
+
+    https://arxiv.org/abs/1511.06434
+    https://github.com/ShengjiaZhao/InfoVAE/blob/master/model_vae.py
+
+    @param z_dim: integer
+                  number of latent dimensions.
+    """
+    def __init__(self, z_dim):
         super(ImageEncoder, self).__init__()
-        self.fc1   = nn.Linear(784, 512)
-        self.fc2   = nn.Linear(512, 512)
-        self.fc31  = nn.Linear(512, n_latents)
-        self.fc32  = nn.Linear(512, n_latents)
-        self.swish = Swish()
+        self.z_dim = z_dim
+        self.conv_layers = nn.Sequential(
+            nn.Conv2d(1, 64, 4, 2, padding=1),
+            nn.LeakyReLU(0.1),
+            nn.Conv2d(64, 128, 4, 2, padding=1),
+            nn.LeakyReLU(0.1),
+        )
+        self.fc_layers = nn.Sequential(
+            nn.Linear(128 * 7 * 7, 1024),
+            nn.LeakyReLU(0.1),
+            nn.Linear(1024, self.z_dim * 2),
+        )
 
     def forward(self, x):
-        h = self.swish(self.fc1(x.view(-1, 784)))
-        h = self.swish(self.fc2(h))
-        return self.fc31(h), self.fc32(h)
+        batch_size = x.size(0)
+        h = self.conv_layers(x)
+        h = h.view(batch_size, 128 * 7 * 7)
+        h = self.fc_layers(h)
+        mu, logvar = torch.chunk(h, 2, dim=1)
+        return mu, logvar
 
 
 class ImageDecoder(nn.Module):
-    """Parametrizes p(x|z).
-
-    @param n_latents: integer
-                      number of latent dimensions
     """
-    def __init__(self, n_latents):
+    Parameterizes p(image|z). Uses DC-GAN architecture.
+
+    https://arxiv.org/abs/1511.06434
+    https://github.com/ShengjiaZhao/InfoVAE/blob/master/model_vae.py
+
+    @param z_dim: integer
+                  number of latent dimensions.
+    """
+    def __init__(self, z_dim):
         super(ImageDecoder, self).__init__()
-        self.fc1   = nn.Linear(n_latents, 512)
-        self.fc2   = nn.Linear(512, 512)
-        self.fc3   = nn.Linear(512, 512)
-        self.fc4   = nn.Linear(512, 784)
-        self.swish = Swish()
+        self.z_dim = z_dim
+        self.fc_layers = nn.Sequential(
+            nn.Linear(self.z_dim, 1024),
+            nn.ReLU(),
+            nn.Linear(1024, 128 * 7 * 7),
+            nn.ReLU(),
+        )
+        self.conv_layers = nn.Sequential(
+            nn.ConvTranspose2d(128, 64, 4, 2, padding=1),
+            nn.ReLU(),
+            nn.ConvTranspose2d(64, 1, 4, 2, padding=1),
+        )
 
     def forward(self, z):
-        h = self.swish(self.fc1(z))
-        h = self.swish(self.fc2(h))
-        h = self.swish(self.fc3(h))
-        return self.fc4(h)  # NOTE: no sigmoid here. See train.py
+        batch_size = z.size(0)
+        h = self.fc_layers(z)
+        h = h.view(batch_size, 128, 7, 7)
+        h = self.conv_layers(h)
+        return h  # no sigmoid!
 
 
-class TextEncoder(nn.Module):
-    """Parametrizes q(z|y).
-
-    @param n_latents: integer
-                      number of latent dimensions
+class LabelEncoder(nn.Module):
     """
-    def __init__(self, n_latents):
-        super(TextEncoder, self).__init__()
-        self.fc1   = nn.Embedding(10, 512)
-        self.fc2   = nn.Linear(512, 512)
-        self.fc31  = nn.Linear(512, n_latents)
-        self.fc32  = nn.Linear(512, n_latents)
-        self.swish = Swish()
+    Parameterizes q(z|label).
+
+    @param z_dim: integer
+                  number of latent dimensions.
+    @param hidden_dim: integer [default: 400]
+                       number of hidden dimensions
+    """
+    def __init__(self, z_dim, hidden_dim=400):
+        super(LabelEncoder, self).__init__()
+        self.z_dim = z_dim
+        self.hidden_dim = hidden_dim
+        self.fc1 = nn.Embedding(10, self.hidden_dim)
+        self.fc2 = nn.Linear(self.hidden_dim, self.hidden_dim)
+        self.fc3 = nn.Linear(self.hidden_dim, self.z_dim * 2)
 
     def forward(self, x):
-        h = self.swish(self.fc1(x))
-        h = self.swish(self.fc2(h))
-        return self.fc31(h), self.fc32(h)
+        h = F.relu(self.fc1(x))
+        h = F.relu(self.fc2(h))
+        h = self.fc3(h)
+        mu, logvar = torch.chunk(h, 2, dim=1)
+        return mu, logvar
 
 
-class TextDecoder(nn.Module):
-    """Parametrizes p(y|z).
-
-    @param n_latents: integer
-                      number of latent dimensions
+class LabelDecoder(nn.Module):
     """
-    def __init__(self, n_latents):
-        super(TextDecoder, self).__init__()
-        self.fc1   = nn.Linear(n_latents, 512)
-        self.fc2   = nn.Linear(512, 512)
-        self.fc3   = nn.Linear(512, 512)
-        self.fc4   = nn.Linear(512, 10)
-        self.swish = Swish()
+    Parameterizes p(label|z).
+
+    @param z_dim: integer
+                  number of latent dimensions.
+    @param hidden_dim: integer [default: 400]
+                       number of hidden dimensions
+    """
+    def __init__(self, z_dim, hidden_dim=400):
+        super(LabelDecoder, self).__init__()
+        self.z_dim = z_dim
+        self.hidden_dim = hidden_dim
+        self.fc1 = nn.Linear(self.z_dim, self.hidden_dim)
+        self.fc2 = nn.Linear(self.hidden_dim, self.hidden_dim)
+        self.fc3 = nn.Linear(self.hidden_dim, self.hidden_dim)
+        self.fc4 = nn.Linear(self.hidden_dim, 10)
 
     def forward(self, z):
-        h = self.swish(self.fc1(z))
-        h = self.swish(self.fc2(h))
-        h = self.swish(self.fc3(h))
-        return self.fc4(h)  # NOTE: no softmax here. See train.py
-
-
-class ProductOfExperts(nn.Module):
-    """Return parameters for product of independent experts.
-    See https://arxiv.org/pdf/1410.7827.pdf for equations.
-
-    @param mu: M x D for M experts
-    @param logvar: M x D for M experts
-    """
-    def forward(self, mu, logvar, eps=1e-8):
-        var       = torch.exp(logvar) + eps
-        # precision of i-th Gaussian expert at point x
-        T         = 1. / (var + eps)
-        pd_mu     = torch.sum(mu * T, dim=0) / torch.sum(T, dim=0)
-        pd_var    = 1. / torch.sum(T, dim=0)
-        pd_logvar = torch.log(pd_var + eps)
-        return pd_mu, pd_logvar
-
-
-class Swish(nn.Module):
-    """https://arxiv.org/abs/1710.05941"""
-    def forward(self, x):
-        return x * F.sigmoid(x)
-
-
-def prior_expert(size, use_cuda=False):
-    """Universal prior expert. Here we use a spherical
-    Gaussian: N(0, 1).
-
-    @param size: integer
-                 dimensionality of Gaussian
-    @param use_cuda: boolean [default: False]
-                     cast CUDA on variables
-    """
-    mu     = Variable(torch.zeros(size))
-    logvar = Variable(torch.zeros(size))
-    if use_cuda:
-        mu, logvar = mu.cuda(), logvar.cuda()
-    return mu, logvar
+        h = F.relu(self.fc1(z))
+        h = F.relu(self.fc2(h))
+        h = F.relu(self.fc3(h))
+        return F.log_softmax(self.fc4(h), dim=1)
